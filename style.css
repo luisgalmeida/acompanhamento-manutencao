@@ -109,3 +109,6 @@ textarea{resize:vertical}
 .perfil-chip{font-size:12px;opacity:.85;padding:4px 10px;border-radius:99px;background:rgba(255,255,255,.14);white-space:nowrap}
 .btn-primary[hidden]{display:none}
 input:disabled,select:disabled{opacity:.65;cursor:not-allowed}
+
+/* campos exigidos e ainda vazios (visão do Administrador) */
+input.pend,select.pend{background:rgba(245,200,40,.32);border-color:#e0a526;box-shadow:0 0 0 1px #e0a526}

@@ -211,22 +211,30 @@ const DATA_COL = { chegada: "dChegada", analise: "dChegada", aprov: "dAnalise", 
   teste: "dTeste", final: "dFinalizado", pronto: "dFinalizado", enviado: "dEnvio" };   // data que levou a OS à coluna
 const vazio = (c, k) => !String(c[k] || "").trim();
 
+const semValor = c => c.garantia === "Sim";   // equipamento em garantia dispensa o valor da proposta
+function exigidos(c, de, t) {                  // campos exigidos para ir da etapa de+1 até a etapa t
+  const falta = [];
+  for (let i = Math.max(de, -1) + 1; i <= t; i++)
+    REQ[FLUXO[i].id].forEach(k => {
+      if (vazio(c, k) && !falta.includes(k) && !(semValor(c) && k === "valorProposta")) falta.push(k);
+    });
+  return falta;
+}
 function faltando(c, colId) {
   const t = baseIdx(colId);
   if (t < 0 || colId === "condenado") return [];
   const de = baseIdx(c.col);
   if (t <= de) return [];               // voltar etapa não exige nada
-  const falta = [];
-  for (let i = Math.max(de, -1) + 1; i <= t; i++)
-    REQ[FLUXO[i].id].forEach(k => { if (vazio(c, k) && !falta.includes(k)) falta.push(k); });
+  const falta = exigidos(c, de, t);
   // saindo de Aguardando Análise para Aguardando Aprovação: o valor da proposta precisa ter sido alterado
-  if (c.col === "analise" && t >= baseIdx("aprov") && numValor(c.valorProposta) === numValor(c.valorBase) && !falta.includes("valorProposta"))
+  if (c.col === "analise" && t >= baseIdx("aprov") && !semValor(c) && numValor(c.valorProposta) === numValor(c.valorBase) && !falta.includes("valorProposta"))
     falta.push("valorAlterado");
   return falta;
 }
+const pendentes = c => { const t = baseIdx(c.col); return t < 0 ? [] : exigidos(c, -1, t); };   // o que já deveria estar preenchido no kanban atual
 function mover(c, colId, silencioso) {
   const f = faltando(c, colId);
-  if (f.length) {
+  if (f.length && !P().editarTudo) {       // só o Administrador move com campos pendentes
     if (!silencioso) toast("Para mover para “" + colName(colId) + "” preencha: " + f.map(rotulo).join(", "));
     return false;
   }
@@ -234,7 +242,8 @@ function mover(c, colId, silencioso) {
   if (colId === "analise") c.valorBase = c.valorProposta || "";
   if (colId === "enviado") c.enviado = "Sim";
   save(); render();
-  if (!colVisivel(colId)) toast("OS enviada para “" + colName(colId) + "”");
+  if (f.length && !silencioso) toast("OS movida com campos pendentes (em amarelo na OS): " + f.map(rotulo).join(", "));
+  else if (!colVisivel(colId)) toast("OS enviada para “" + colName(colId) + "”");
   return true;
 }
 const colName = id => (S.cols.find(c => c.id === id) || {}).name || "";
@@ -397,16 +406,16 @@ function novaOS() {
   if (!P().criar) return;
   modal = { modo: "novo" };
   abrirModal("Nova OS — Chegada de equipamento",
-    `<p class="hint">Todos os campos são obrigatórios para registrar a chegada.</p>
+    `<p class="hint">Equipamento, modelo, série e data de chegada são obrigatórios; a garantia é opcional.</p>
      <div class="grid sec">${sel("equipamento", EQUIPAMENTOS)}${sel("modelo", MODELOS)}
      ${campo("serie", "text", 'placeholder="Ex.: 57PPL7QDA3006L ou SEM N/S"')}
-     ${campo("dChegada", "date")}</div>`,
+     ${campo("dChegada", "date")}${sel("garantia", ["Sim", "Não"], "Não informado")}</div>`,
     `<button class="btn" onclick="fechar()">Cancelar</button><button class="btn green" id="b-salvar" disabled>Registrar chegada</button>`);
   $("f_dChegada").value = iso(hoje());
   ["f_equipamento", "f_modelo", "f_serie", "f_dChegada"].forEach(i => { $(i).oninput = validarNovo; $(i).onchange = validarNovo; });
   $("b-salvar").onclick = () => {
     if (validarNovo()) return;
-    const c = { id: novoId(), col: "chegada", equipamento: val("equipamento"), modelo: val("modelo"), serie: val("serie"), dChegada: val("dChegada"), enviado: "Não" };
+    const c = { id: novoId(), col: "chegada", equipamento: val("equipamento"), modelo: val("modelo"), serie: val("serie"), dChegada: val("dChegada"), garantia: val("garantia"), enviado: "Não" };
     S.cards.push(c); save(); fechar(); render(); toast("OS registrada em “" + colName("chegada") + "”");
   };
 }
@@ -457,10 +466,15 @@ function abrir(id) {
   const atualizaFalta = () => {
     const tmp = { ...c }; Object.keys(LABEL).forEach(k => { if ($("f_" + k)) tmp[k] = val(k); });
     $("m-stats").innerHTML = estatisticas(tmp).map(([l, v]) => `<div class="statrow"><span>${l}</span><b>${v}</b></div>`).join("");
-    if (!prox) return;
+    const adm = P().editarTudo;
+    const pend = adm ? pendentes(tmp) : [];       // Administrador: campos exigidos e vazios ficam em amarelo
+    Object.keys(LABEL).forEach(k => { const el = $("f_" + k); if (el) el.classList.toggle("pend", pend.includes(k)); });
+    if (!prox) { $("m-falta").textContent = pend.length ? "Campos pendentes (em amarelo): " + pend.map(rotulo).join(", ") : ""; return; }
     const f = faltando(tmp, prox.id);
-    $("m-falta").textContent = f.length ? "Para avançar, preencha: " + f.map(rotulo).join(", ") : "";
-    $("b-prox").disabled = f.length > 0;
+    $("m-falta").textContent = f.length
+      ? (adm ? "Para avançar sem pendências, preencha: " : "Para avançar, preencha: ") + f.map(rotulo).join(", ")
+      : (pend.length ? "Campos pendentes (em amarelo): " + pend.map(rotulo).join(", ") : "");
+    $("b-prox").disabled = f.length > 0 && !adm;
   };
   $("m-body").oninput = atualizaFalta;
   $("m-body").onchange = atualizaFalta;
