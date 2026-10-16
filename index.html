@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Acompanhamento de Manutenção</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="user" id="user" title="Limpar busca e filtros">MA</div>
+  <h1>Acompanhamento de Manutenção <small id="hoje"></small></h1>
+  <span class="spacer"></span>
+  <button class="nav" id="b-atualizar" title="Atualizar informações">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    Atualizar
+  </button>
+  <input type="search" id="busca" placeholder="Buscar OS, cliente, série… ou “atrasada”">
+  <button class="btn-primary" id="b-nova2">+ Nova OS</button>
+  <span class="perfil-chip" id="perfil-nome"></span>
+  <button class="nav" id="b-sair" title="Trocar de perfil">Sair</button>
+</header>
+
+<section class="band"><div class="stats" id="stats"></div></section>
+
+<div class="board" id="board"></div>
+
+<div class="overlay" id="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <header class="m-head"><h2 id="m-title"></h2><button class="x" id="m-x" aria-label="Fechar">✕</button></header>
+    <div class="m-body" id="m-body"></div>
+    <footer class="m-foot" id="m-foot"></footer>
+  </div>
+</div>
+<div class="overlay block" id="conf" hidden>
+  <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="conf-t" style="width:min(460px,100%)">
+    <header class="m-head"><h2 id="conf-t">⚠ Equipamento condenado</h2><button class="x" id="conf-x" aria-label="Fechar">✕</button></header>
+    <div class="m-body"><p id="conf-msg"></p></div>
+    <footer class="m-foot"><button class="btn" id="conf-no">Não, cancelar</button><button class="btn green" id="conf-yes">Sim, condenar</button></footer>
+  </div>
+</div>
+<div class="toast" id="toast" hidden></div>
+<div class="login" id="login">
+  <div class="login-box">
+    <h1>Acompanhamento de Manutenção</h1>
+    <p class="hint">Escolha o seu perfil de acesso</p>
+    <div class="perfis" id="perfis"></div>
+    <div id="login-senha-box" hidden>
+      <label for="login-senha">Senha</label>
+      <input type="password" id="login-senha" autocomplete="off">
+      <p class="login-erro" id="login-erro"></p>
+      <button class="btn green" id="login-ok" style="width:100%;margin-top:10px">Entrar</button>
+    </div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
