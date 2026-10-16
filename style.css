@@ -112,3 +112,12 @@ input:disabled,select:disabled{opacity:.65;cursor:not-allowed}
 
 /* campos exigidos e ainda vazios (visão do Administrador) */
 input.pend,select.pend{background:rgba(245,200,40,.32);border-color:#e0a526;box-shadow:0 0 0 1px #e0a526}
+
+/* situação do salvamento e avisos de erro */
+.salvo{font-size:12px;opacity:.9;white-space:nowrap;padding:3px 10px;border-radius:99px}
+.salvo:empty{display:none}
+.salvo.ok{background:rgba(74,222,128,.18);color:#bdf5d0}
+.salvo.ocupado{background:rgba(255,255,255,.14)}
+.salvo.erro{background:#c62828;color:#fff;font-weight:600}
+.toast{cursor:pointer}
+.toast.err{background:#b3261e;font-weight:600}

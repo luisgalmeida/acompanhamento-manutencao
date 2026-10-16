@@ -71,9 +71,13 @@ const CAMPOS_OS = ["col", "equipamento", "modelo", "serie", "os", "cliente", "ga
 const CAMPOS_DATA = new Set(["dChegada", "dAnalise", "dAprovacao", "dExecucao", "dTeste", "dFinalizado", "dEnvio"]);
 const snake = k => k.replace(/[A-Z]/g, m => "_" + m.toLowerCase());
 
-let snap = {}, snapCols = "[]", pendente = false, fila = Promise.resolve(), escrevendo = 0;
+let snap = {}, snapCols = "[]", pendente = false, fila = Promise.resolve(), escrevendo = 0, geracao = 0, houveErro = false;
 function snapshot() { snap = {}; S.cards.forEach(c => snap[c.id] = JSON.stringify(c)); snapCols = JSON.stringify(S.cols); }
 
+function mostrarStatus(txt, cls) {
+  const el = $("status-salvo"); if (!el) return;
+  el.textContent = txt; el.className = "salvo " + (cls || "");
+}
 function linhaParaCard(r) {
   const c = { id: r.id };
   CAMPOS_OS.forEach(k => { const v = r[snake(k)]; c[k] = v == null ? "" : v; });
@@ -82,14 +86,32 @@ function linhaParaCard(r) {
   c.valorBase = v && v.valor_base || "";
   return c;
 }
+async function lerTudo(consulta) {             // o servidor devolve no máximo 1000 linhas por vez
+  let out = [];
+  for (let i = 0; ; i += 1000) {
+    const r = await consulta().range(i, i + 999);
+    if (r.error) return r;
+    out = out.concat(r.data);
+    if (r.data.length < 1000) return { data: out, error: null };
+  }
+}
+function erroDeSessao(e) { return /jwt|expired|not authenticated|invalid token|401/i.test(String(e && e.message || e)); }
 async function carregar(avisar, imediato) {
   if (!sb || !ROLE) return;
   if (!imediato) await fila;                    // espera as gravações pendentes terminarem
+  const g = geracao;
   const [co, os] = await Promise.all([
-    sb.from("colunas").select("*").order("ordem"),
-    sb.from("ordens").select("*, os_valores(valor_proposta, valor_base)").order("criado_em")
+    lerTudo(() => sb.from("colunas").select("*").order("ordem")),
+    lerTudo(() => sb.from("ordens").select("*, os_valores(valor_proposta, valor_base)").order("criado_em").order("id"))
   ]);
-  if (co.error || os.error) { toast("Erro ao carregar: " + (co.error || os.error).message); return; }
+  if (!ROLE) return;
+  if (co.error || os.error) {
+    const e = co.error || os.error;
+    if (erroDeSessao(e)) return sair("Sua sessão expirou. Entre novamente.");
+    toast("Erro ao carregar: " + e.message, true); return;
+  }
+  // se algo foi salvo durante a leitura, estes dados já estão desatualizados: lê de novo em vez de sobrescrever a tela
+  if (g !== geracao || escrevendo) { setTimeout(() => carregar(avisar), 400); return; }
   S = { cols: co.data.map(c => ({ id: c.id, name: c.nome, custom: c.custom })), cards: os.data.map(linhaParaCard) };
   snapshot(); render();
   if (avisar) toast("Informações atualizadas");
@@ -110,7 +132,8 @@ async function gravarCard(p) {
   });
   if (p.novo) { row.id = c.id; await ok(sb.from("ordens").insert(row)); }
   else if (Object.keys(row).length) await ok(sb.from("ordens").update(row, { count: "exact" }).eq("id", c.id));
-  if (P().valores && (c.valorProposta || c.valorBase) && (p.novo || c.valorProposta !== a.valorProposta || c.valorBase !== a.valorBase))
+  const valorMudou = p.novo ? !!(c.valorProposta || c.valorBase) : (c.valorProposta !== a.valorProposta || c.valorBase !== a.valorBase);
+  if (P().valores && valorMudou)               // inclui apagar o valor
     await ok(sb.from("os_valores").upsert({ ordem_id: c.id, valor_proposta: c.valorProposta || "", valor_base: c.valorBase || "" }));
 }
 async function gravarCols(cols, removidos) {
@@ -134,10 +157,23 @@ function save() {
     tarefas.push(() => gravarCols(cols, antes.filter(id => !cols.some(c => c.id === id))));
   }
   snapshot();
+  if (!tarefas.length) return;
+  geracao++;
+  houveErro = false; mostrarStatus("Salvando…", "ocupado");
   tarefas.forEach(t => {
     escrevendo++;
-    fila = fila.then(t).catch(e => { toast("Não foi possível salvar: " + (e.message || e)); return carregar(false, true); })
-      .then(() => { if (--escrevendo === 0 && pendente && $("overlay").hidden) { pendente = false; carregar(); } });
+    fila = fila.then(t).catch(e => {
+      houveErro = true;
+      if (erroDeSessao(e)) return sair("Sua sessão expirou. Entre novamente.");
+      mostrarStatus("Erro ao salvar", "erro");
+      toast("Não foi possível salvar: " + (e.message || e) + ". A tela será recarregada com os dados do servidor.", true);
+      return carregar(false, true);
+    }).then(() => {
+      if (--escrevendo === 0) {
+        if (!houveErro) mostrarStatus("Salvo às " + new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }), "ok");
+        if (pendente && $("overlay").hidden) { pendente = false; carregar(); }
+      }
+    });
   });
 }
 let inscrito = false, agenda = null;
@@ -145,11 +181,16 @@ function assinarMudancas() {                   // outro acesso salvou algo -> at
   if (!sb || inscrito) return; inscrito = true;
   const aviso = () => {
     clearTimeout(agenda);
-    agenda = setTimeout(() => { if (!ROLE) return; if ($("overlay").hidden && $("conf").hidden && !escrevendo) carregar(); else pendente = true; }, 500);
+    agenda = setTimeout(() => {
+      if (!ROLE) return;
+      const digitando = document.activeElement && document.activeElement.closest && document.activeElement.closest("#board");
+      if ($("overlay").hidden && $("conf").hidden && !escrevendo && !digitando) carregar(); else pendente = true;
+    }, 500);
   };
   let ch = sb.channel("mudancas");
   ["ordens", "colunas", "os_valores"].forEach(t => { ch = ch.on("postgres_changes", { event: "*", schema: "public", table: t }, aviso); });
   ch.subscribe();
+  sb.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT" && ROLE) sair("Sua sessão expirou. Entre novamente."); });
 }
 
 const $ = id => document.getElementById(id);
@@ -385,9 +426,15 @@ function fechar() {
   $("overlay").hidden = true; modal = null;
   if (pendente) { pendente = false; sincronizar(); }
 }
-$("m-x").onclick = fechar;
-$("overlay").addEventListener("mousedown", e => { if (e.target === $("overlay")) fechar(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("overlay").hidden) fechar(); });
+// fechar sem salvar (X, Esc, clique fora, Cancelar): se houver algo digitado, pergunta antes de descartar
+const lerForm = () => [...$("m-body").querySelectorAll("[id^=f_]")].map(e => e.id + "=" + e.value).join("|");
+function tentarFechar() {
+  if (modal && modal.inicial !== undefined && lerForm() !== modal.inicial && !confirm("Há alterações não salvas. Descartá-las?")) return;
+  fechar();
+}
+$("m-x").onclick = tentarFechar;
+$("overlay").addEventListener("mousedown", e => { if (e.target === $("overlay")) tentarFechar(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("overlay").hidden && $("conf").hidden) tentarFechar(); });
 
 /* ===== Estatísticas (dias corridos, como na planilha) ===== */
 function estatisticas(c) {
@@ -410,8 +457,9 @@ function novaOS() {
      <div class="grid sec">${sel("equipamento", EQUIPAMENTOS)}${sel("modelo", MODELOS)}
      ${campo("serie", "text", 'placeholder="Ex.: 57PPL7QDA3006L ou SEM N/S"')}
      ${campo("dChegada", "date")}${sel("garantia", ["Sim", "Não"], "Não informado")}</div>`,
-    `<button class="btn" onclick="fechar()">Cancelar</button><button class="btn green" id="b-salvar" disabled>Registrar chegada</button>`);
+    `<button class="btn" onclick="tentarFechar()">Cancelar</button><button class="btn green" id="b-salvar" disabled>Registrar chegada</button>`);
   $("f_dChegada").value = iso(hoje());
+  modal.inicial = lerForm();
   ["f_equipamento", "f_modelo", "f_serie", "f_dChegada"].forEach(i => { $(i).oninput = validarNovo; $(i).onchange = validarNovo; });
   $("b-salvar").onclick = () => {
     if (validarNovo()) return;
@@ -461,6 +509,7 @@ function abrir(id) {
     el.value = c[k] || "";
     if (bloqueado(k, c)) el.disabled = true;     // já salvo: só o Administrador edita
   });
+  modal.inicial = lerForm();
   if (!P().editarTudo) $("m-body").insertAdjacentHTML("afterbegin", '<p class="hint">Campos já salvos ficam bloqueados; apenas o Administrador pode alterá-los.</p>');
 
   const atualizaFalta = () => {
@@ -519,10 +568,11 @@ function confirmarCondenado(c, sim, nao) {
 }
 
 let tt;
-function toast(m) {
-  const t = $("toast"); t.textContent = m; t.hidden = false;
-  clearTimeout(tt); tt = setTimeout(() => t.hidden = true, 4500);
+function toast(m, erro) {                      // erros ficam mais tempo na tela e podem ser fechados com um clique
+  const t = $("toast"); t.textContent = m; t.hidden = false; t.classList.toggle("err", !!erro);
+  clearTimeout(tt); tt = setTimeout(() => t.hidden = true, erro ? 12000 : 4500);
 }
+$("toast").onclick = () => { $("toast").hidden = true; };
 
 /* ===== Início ===== */
 $("b-nova2").onclick = novaOS;
@@ -546,12 +596,12 @@ function entrar(role) {
   aplicarPerfil(); S = { cols: [], cards: [] }; snapshot(); render();
   assinarMudancas(); carregar();
 }
-async function sair() {
+async function sair(msg) {
   ROLE = null;
-  if (sb) await sb.auth.signOut();
+  if (sb) { try { await sb.auth.signOut(); } catch (e) {} }
   S = { cols: [], cards: [] }; snapshot();
-  fechar(); $("conf").hidden = true;
-  perfilSel = null; $("login-senha").value = ""; $("login-erro").textContent = "";
+  fechar(); $("conf").hidden = true; mostrarStatus("");
+  perfilSel = null; $("login-senha").value = ""; $("login-erro").textContent = typeof msg === "string" ? msg : "";
   document.querySelectorAll(".perfil-op").forEach(b => b.classList.remove("sel"));
   $("login-senha-box").hidden = true;
   $("login").hidden = false;
@@ -582,7 +632,7 @@ async function tentarLogin() {
 }
 $("login-ok").onclick = tentarLogin;
 $("login-senha").onkeydown = e => { if (e.key === "Enter") tentarLogin(); };
-$("b-sair").onclick = sair;
+$("b-sair").onclick = () => sair();
 (async function retomarSessao() {            // já estava conectado neste navegador
   if (!sb) { $("login-erro").textContent = "Preencha a URL e a chave do Supabase em config.js."; return; }
   const { data } = await sb.auth.getSession();
