@@ -121,3 +121,14 @@ input.pend,select.pend{background:rgba(245,200,40,.32);border-color:#e0a526;box-
 .salvo.erro{background:#c62828;color:#fff;font-weight:600}
 .toast{cursor:pointer}
 .toast.err{background:#b3261e;font-weight:600}
+
+/* visibilidade dos kanbans */
+.vis-tabs{margin:10px 0 14px;grid-template-columns:repeat(3,1fr)}
+.vis-tabs .perfil-op{padding:10px 6px;font-size:13px}
+.vis-lista{display:grid;grid-template-columns:1fr 1fr;gap:4px 14px}
+.vis-item{display:flex;align-items:center;gap:8px;margin:0;padding:7px 8px;border-radius:8px;font-size:13px;color:var(--ink);cursor:pointer}
+.vis-item:hover{background:var(--col)}
+.vis-item input{width:auto;margin:0}
+@media (max-width:560px){.vis-lista{grid-template-columns:1fr}}
+.stat{flex:0 0 122px}
+.stat .l{white-space:normal;line-height:1.15}
