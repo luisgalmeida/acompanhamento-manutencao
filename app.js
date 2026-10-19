@@ -54,12 +54,16 @@ const PERFIS = {
 };
 let ROLE = null;
 const P = () => PERFIS[ROLE] || {};
-let VIS = {};                                   // kanbans visíveis por perfil, definidos pelo Administrador: { vendedor: [ids], ... }
-const colVisivel = id => {
-  if (ROLE === "admin") return true;
-  const l = VIS[ROLE];
-  return l ? l.includes(id) : (!P().cols || P().cols.includes(id));
+let VIS = {}, CARDS = {}, RESUMO = null;        // definidos pelo Administrador: kanbans e cards do topo por perfil; RESUMO = contagens do servidor
+// kanbans que o perfil vê (null = todos); sem configuração no banco vale o padrão de PERFIS
+const colunasDe = p => VIS[p] || (p === "admin" || !PERFIS[p].cols ? null : PERFIS[p].cols);
+const colVisivel = id => { const l = colunasDe(ROLE); return !l || l.includes(id); };
+// cards do topo: ids "aberto", "atrasadas" e os ids dos kanbans. Sem escolha explícita, acompanham os kanbans visíveis
+const cardsPadrao = p => {
+  const l = colunasDe(p);
+  return [...(PERFIS[p].valores ? ["aberto"] : []), ...S.cols.map(c => c.id).filter(id => !l || l.includes(id)), "atrasadas"];
 };
+const cardAtivo = id => (CARDS[ROLE] || cardsPadrao(ROLE)).includes(id);
 const rotulo = k => (!P().valores && (k === "valorProposta" || k === "valorAlterado")) ? "atualização do valor da proposta (a cargo do Vendedor)" : LABEL[k];
 // fora do Administrador, o que já foi salvo não é editado (exceto o valor da proposta enquanto a OS está em análise)
 const bloqueado = (k, c) => !P().editarTudo && String(c[k] || "").trim() !== "" && !(k === "valorProposta" && c.col === "analise");
@@ -102,10 +106,11 @@ async function carregar(avisar, imediato) {
   if (!sb || !ROLE) return;
   if (!imediato) await fila;                    // espera as gravações pendentes terminarem
   const g = geracao;
-  const [co, os, vi] = await Promise.all([
+  const [co, os, vi, rs] = await Promise.all([
     lerTudo(() => sb.from("colunas").select("*").order("ordem")),
     lerTudo(() => sb.from("ordens").select("*, os_valores(valor_proposta, valor_base)").order("criado_em").order("id")),
-    lerTudo(() => sb.from("visibilidade").select("*").order("perfil"))
+    lerTudo(() => sb.from("visibilidade").select("*").order("perfil")),
+    sb.rpc("resumo_cards")
   ]);
   if (!ROLE) return;
   if (co.error || os.error) {
@@ -115,7 +120,9 @@ async function carregar(avisar, imediato) {
   }
   // se algo foi salvo durante a leitura, estes dados já estão desatualizados: lê de novo em vez de sobrescrever a tela
   if (g !== geracao || escrevendo) { setTimeout(() => carregar(avisar), 400); return; }
-  if (!vi.error) { VIS = {}; vi.data.forEach(v => { VIS[v.perfil] = v.colunas || []; }); }   // sem a tabela: usa o padrão de PERFIS
+  if (!vi.error) { VIS = {}; CARDS = {}; vi.data.forEach(v => { VIS[v.perfil] = v.colunas || []; if (v.cards) CARDS[v.perfil] = v.cards; }); }   // sem a tabela: usa o padrão de PERFIS
+  RESUMO = null;
+  if (!rs.error && Array.isArray(rs.data)) { RESUMO = {}; rs.data.forEach(r => { RESUMO[r.col] = r; }); }   // sem a função: conta só o que a tela carregou
   S = { cols: co.data.map(c => ({ id: c.id, name: c.nome, custom: c.custom })), cards: os.data.map(linhaParaCard) };
   snapshot(); render();
   if (avisar) toast("Informações atualizadas");
@@ -347,15 +354,29 @@ function render() {
   board.querySelectorAll(".cards").forEach((e, i) => { if (tops[i]) e.scrollTop = tops[i]; });
 
   // painel
-  const n = id => S.cards.filter(c => c.col === id).length;
-  const atr = S.cards.filter(c => colVisivel(c.col) && info(c).atrasado).length;
   const COM_VALOR = ["analise", "aprov", "fila", "exec", "teste", "final"];
-  const soma = id => P().valores && COM_VALOR.includes(id) ? brl(S.cards.filter(c => c.col === id).reduce((t, c) => t + numValor(c.valorProposta), 0)) : "";
-  // um card para cada kanban visível (inclusive os criados depois); "Em aberto" só para quem vê valores
-  const tiles = S.cols.filter(col => colVisivel(col.id)).map(col => [col.name, n(col.id), "", soma(col.id)]);
-  if (P().valores) tiles.unshift(["Em aberto", S.cards.filter(c => colVisivel(c.col) && c.col !== "enviado" && c.col !== "condenado").length, ""]);
-  const tile = ([l, v, k, valor]) => `<div class="stat ${k}"><span class="n">${v}</span><span class="l">${l}</span>${valor ? `<span class="v">${valor}</span>` : ""}</div>`;
-  $("stats").innerHTML = tiles.map(tile).join("") + tile(["Atrasadas", atr, "late"]);
+  // contagem e valor de um kanban: kanbans visíveis vêm da tela (atualiza na hora); os ocultos vêm do resumo do servidor
+  const contagem = id => {
+    if (colVisivel(id) || !RESUMO) {
+      const l = S.cards.filter(c => c.col === id);
+      return { qtd: l.length, valor: l.reduce((t, c) => t + numValor(c.valorProposta), 0) };
+    }
+    const r = RESUMO[id];
+    return { qtd: r ? Number(r.qtd) : 0, valor: r ? Number(r.valor || 0) : 0 };
+  };
+  const tiles = [];
+  if (cardAtivo("aberto")) {                    // todas as OS que ainda não foram enviadas nem condenadas
+    const ab = S.cols.filter(c => c.id !== "enviado" && c.id !== "condenado").map(c => contagem(c.id));
+    tiles.push(["Em aberto", ab.reduce((t, x) => t + x.qtd, 0), "", P().valores ? brl(ab.reduce((t, x) => t + x.valor, 0)) : ""]);
+  }
+  S.cols.forEach(col => {
+    if (!cardAtivo(col.id)) return;
+    const ct = contagem(col.id);
+    tiles.push([col.name, ct.qtd, "", P().valores && COM_VALOR.includes(col.id) ? brl(ct.valor) : ""]);
+  });
+  const tile = ([l, v, k, valor]) => `<div class="stat ${k}"><span class="n">${v}</span><span class="l">${esc(l)}</span>${valor ? `<span class="v">${valor}</span>` : ""}</div>`;
+  const atr = S.cards.filter(c => colVisivel(c.col) && info(c).atrasado).length;
+  $("stats").innerHTML = tiles.map(tile).join("") + (cardAtivo("atrasadas") ? tile(["Atrasadas", atr, "late"]) : "");
 }
 
 /* ===== Eventos do quadro ===== */
@@ -368,10 +389,8 @@ $("board").addEventListener("click", e => {
   if (act.dataset.act === "addcol") {
     const id = "c" + Date.now();
     S.cols.push({ id, name: "Novo kanban", custom: true });
-    if (VIS.vendedor) {                          // o Vendedor continua vendo todos os kanbans; o Administrador pode ocultar depois
-      VIS.vendedor = [...VIS.vendedor, id];
-      sb.from("visibilidade").upsert({ perfil: "vendedor", colunas: VIS.vendedor }).then(r => { if (r.error) toast("Não foi possível liberar o novo kanban ao Vendedor: " + r.error.message, true); });
-    }
+    liberarNovoKanban(id);
+
     save(); render();
     const t = $("board").querySelector(`[data-col="${id}"] .ttl`);
     $("board").scrollLeft = $("board").scrollWidth;
@@ -577,40 +596,76 @@ function confirmarCondenado(c, sim, nao) {
   $("conf-no").onclick = $("conf-x").onclick = () => fim(nao);
 }
 
-/* ===== Visibilidade dos kanbans por perfil (só o Administrador) ===== */
+/* ===== Visibilidade dos kanbans e dos cards do topo, por perfil (só o Administrador) ===== */
+// Novos kanbans entram automaticamente para o Administrador e o Vendedor; os demais perfis só passam a ver se o Administrador marcar
+function liberarNovoKanban(id) {
+  const linhas = [];
+  ["admin", "vendedor"].forEach(p => {
+    if (!VIS[p]) return;                         // sem lista própria: já vê todos
+    VIS[p] = [...VIS[p], id];
+    const l = { perfil: p, colunas: VIS[p] };
+    if (CARDS[p]) { CARDS[p] = [...CARDS[p], id]; l.cards = CARDS[p]; }
+    linhas.push(l);
+  });
+  if (linhas.length) sb.from("visibilidade").upsert(linhas).then(r => { if (r.error) toast("Não foi possível liberar o novo kanban: " + r.error.message, true); });
+}
 function abrirVisibilidade() {
   if (!P().editarTudo) return;
-  const perfis = ["vendedor", "manutencao", "expedicao"];
-  const original = {}, rascunho = {};
+  const perfis = ["admin", "vendedor", "manutencao", "expedicao"];
+  const ids = S.cols.map(c => c.id);
+  const ordenar = set => ["aberto", ...ids, "atrasadas"].filter(x => set.has(x));
+  const original = {}, rk = {}, rc = {}, manual = {};
   perfis.forEach(p => {
-    original[p] = VIS[p] || PERFIS[p].cols || S.cols.map(c => c.id);
-    rascunho[p] = new Set(original[p]);
+    original[p] = { cols: new Set(colunasDe(p) || ids), cards: new Set(CARDS[p] || cardsPadrao(p)) };
+    rk[p] = new Set(original[p].cols);           // kanbans visíveis (rascunho)
+    rc[p] = new Set(original[p].cards);          // cards do topo (rascunho)
+    manual[p] = !!CARDS[p];                      // enquanto não escolher os cards à mão, eles acompanham os kanbans
   });
-  let atual = perfis[0];
+  let atual = "vendedor";
   modal = { modo: "vis" };
-  abrirModal("Visibilidade dos kanbans",
-    `<p class="hint">Escolha um perfil e marque os kanbans que ele poderá ver. Os cards de resumo no topo acompanham essa escolha, inclusive para kanbans novos.</p>
+  abrirModal("Visibilidade por perfil",
+    `<p class="hint">Escolha um perfil. Marque os <b>kanbans</b> que ele vê e, separadamente, os <b>cards de resumo</b> do topo. Um não depende do outro.</p>
      <div class="perfis vis-tabs" id="vis-tabs">${perfis.map(p => `<button type="button" class="perfil-op" data-p="${p}">${PERFIS[p].nome}</button>`).join("")}</div>
-     <div class="vis-lista" id="vis-lista"></div>`,
+     <h4 class="vis-h">Kanbans visíveis</h4><div class="vis-lista" id="vis-kanbans"></div>
+     <h4 class="vis-h">Cards do topo</h4><div class="vis-lista" id="vis-cards"></div>
+     <p class="hint">“Em aberto” soma todas as OS não enviadas nem condenadas e mostra o valor total só para Administrador e Vendedor. “Atrasadas” conta apenas as OS dos kanbans visíveis. Um card de kanban oculto mostra a contagem do servidor.</p>`,
     `<button class="btn" onclick="tentarFechar()">Cancelar</button><button class="btn green" id="vis-salvar">Salvar</button>`);
-  const estado = () => JSON.stringify(perfis.map(p => [...rascunho[p]].sort()));
+  const estado = () => JSON.stringify(perfis.map(p => [[...rk[p]].sort(), [...rc[p]].sort(), manual[p]]));
   const inicial = estado();
   modal.sujo = () => estado() !== inicial;
+  const item = (tipo, id, nome, marcado) =>
+    `<label class="vis-item"><input type="checkbox" data-${tipo}="${esc(id)}" ${marcado ? "checked" : ""}> <span>${esc(nome)}</span></label>`;
   const desenhar = () => {
     document.querySelectorAll("#vis-tabs .perfil-op").forEach(b => b.classList.toggle("sel", b.dataset.p === atual));
-    $("vis-lista").innerHTML = S.cols.map(c =>
-      `<label class="vis-item"><input type="checkbox" data-c="${esc(c.id)}" ${rascunho[atual].has(c.id) ? "checked" : ""}> <span>${esc(c.name)}</span></label>`).join("");
+    $("vis-kanbans").innerHTML = S.cols.map(c => item("k", c.id, c.name, rk[atual].has(c.id))).join("");
+    $("vis-cards").innerHTML = item("t", "aberto", "Em aberto (total de OS e valor)", rc[atual].has("aberto"))
+      + S.cols.map(c => item("t", c.id, c.name, rc[atual].has(c.id))).join("")
+      + item("t", "atrasadas", "Atrasadas", rc[atual].has("atrasadas"));
   };
+  const alterna = (set, id, v) => v ? set.add(id) : set.delete(id);
   $("vis-tabs").onclick = e => { const b = e.target.closest(".perfil-op"); if (b) { atual = b.dataset.p; desenhar(); } };
-  $("vis-lista").onchange = e => {
-    const cb = e.target.closest("input[data-c]"); if (!cb) return;
-    if (cb.checked) rascunho[atual].add(cb.dataset.c); else rascunho[atual].delete(cb.dataset.c);
+  $("vis-kanbans").onchange = e => {
+    const cb = e.target.closest("input[data-k]"); if (!cb) return;
+    alterna(rk[atual], cb.dataset.k, cb.checked);
+    if (!manual[atual]) { alterna(rc[atual], cb.dataset.k, cb.checked); desenhar(); }   // cards ainda acompanham os kanbans
+  };
+  $("vis-cards").onchange = e => {
+    const cb = e.target.closest("input[data-t]"); if (!cb) return;
+    alterna(rc[atual], cb.dataset.t, cb.checked); manual[atual] = true;
   };
   desenhar();
   $("vis-salvar").onclick = async () => {
-    const mudados = perfis.filter(p => [...rascunho[p]].sort().join() !== [...original[p]].sort().join());
-    if (!mudados.length) return fechar();
-    const linhas = mudados.map(p => ({ perfil: p, colunas: S.cols.map(c => c.id).filter(id => rascunho[p].has(id)) }));
+    const igual = (a, b) => [...a].sort().join() === [...b].sort().join();
+    const linhas = [];
+    perfis.forEach(p => {
+      const mudouK = !igual(rk[p], original[p].cols);
+      const mudouC = manual[p] && !igual(rc[p], original[p].cards);
+      if (!mudouK && !mudouC) return;
+      const l = { perfil: p, colunas: ordenar(rk[p]).filter(x => ids.includes(x)) };
+      if (mudouC) l.cards = ordenar(rc[p]);
+      linhas.push(l);
+    });
+    if (!linhas.length) return fechar();
     $("vis-salvar").disabled = true;
     try {
       await ok(sb.from("visibilidade").upsert(linhas));
@@ -618,11 +673,10 @@ function abrirVisibilidade() {
       $("vis-salvar").disabled = false;
       return toast("Não foi possível salvar a visibilidade: " + (e.message || e), true);
     }
-    linhas.forEach(l => { VIS[l.perfil] = l.colunas; });
+    linhas.forEach(l => { VIS[l.perfil] = l.colunas; if (l.cards) CARDS[l.perfil] = l.cards; });
     fechar(); render(); toast("Visibilidade atualizada");
   };
 }
-
 let tt;
 function toast(m, erro) {                      // erros ficam mais tempo na tela e podem ser fechados com um clique
   const t = $("toast"); t.textContent = m; t.hidden = false; t.classList.toggle("err", !!erro);
