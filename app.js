@@ -1,4 +1,5 @@
 "use strict";
+const VERSAO = "2026.10.19.3";   // aparece na tela de login e ao passar o mouse sobre o perfil; atualize junto com o ?v= do index.html
 /* ===== Dados da planilha ===== */
 const EQUIPAMENTOS = ["Bateria", "Drone", "Carregador", "Gerador", "Controle", "Motor", "Placa", "Outros"];
 const MODELOS = ["T10", "T20", "T20P", "T25", "T25P", "T30", "T40", "T50", "T55P", "T70", "T70P", "T100", "T100 Dual", "Consumer", "Aviônica", "Outros"];
@@ -686,6 +687,7 @@ $("toast").onclick = () => { $("toast").hidden = true; };
 
 /* ===== Início ===== */
 $("b-nova2").onclick = novaOS;
+$("versao").textContent = "Versão " + VERSAO; $("perfil-nome").title = "Versão " + VERSAO;
 $("b-vis").onclick = abrirVisibilidade;
 $("user").onclick = () => { termo = ""; $("busca").value = ""; render(); };
 $("busca").oninput = e => { termo = e.target.value; render(); };
