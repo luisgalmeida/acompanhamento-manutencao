@@ -1,5 +1,5 @@
 "use strict";
-const VERSAO = "2026.10.19.3";   // aparece na tela de login e ao passar o mouse sobre o perfil; atualize junto com o ?v= do index.html
+const VERSAO = "2026.10.20.1";   // aparece na tela de login e ao passar o mouse sobre o perfil; atualize junto com o ?v= do index.html
 /* ===== Dados da planilha ===== */
 const EQUIPAMENTOS = ["Bateria", "Drone", "Carregador", "Gerador", "Controle", "Motor", "Placa", "Outros"];
 const MODELOS = ["T10", "T20", "T20P", "T25", "T25P", "T30", "T40", "T50", "T55P", "T70", "T70P", "T100", "T100 Dual", "Consumer", "Aviônica", "Outros"];
@@ -67,7 +67,9 @@ const cardsPadrao = p => {
 const cardAtivo = id => (CARDS[ROLE] || cardsPadrao(ROLE)).includes(id);
 const rotulo = k => (!P().valores && (k === "valorProposta" || k === "valorAlterado")) ? "atualização do valor da proposta (a cargo do Vendedor)" : LABEL[k];
 // fora do Administrador, o que já foi salvo não é editado (exceto o valor da proposta enquanto a OS está em análise)
-const bloqueado = (k, c) => !P().editarTudo && String(c[k] || "").trim() !== "" && !(k === "valorProposta" && c.col === "analise");
+// exceções: o valor da proposta (em análise) e a garantia, que o Vendedor pode alterar a qualquer momento
+const bloqueado = (k, c) => !P().editarTudo && String(c[k] || "").trim() !== ""
+  && !(k === "valorProposta" && c.col === "analise") && !(k === "garantia" && ROLE === "vendedor");
 const novoId = () => (crypto.randomUUID ? crypto.randomUUID() : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, ch => { const r = Math.random() * 16 | 0; return (ch === "x" ? r : (r & 3 | 8)).toString(16); }));
 
 /* ===== Banco de dados (Supabase) ===== */
