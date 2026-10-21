@@ -1,5 +1,5 @@
 "use strict";
-const VERSAO = "2026.10.20.1";   // aparece na tela de login e ao passar o mouse sobre o perfil; atualize junto com o ?v= do index.html
+const VERSAO = "2026.10.21.1";   // aparece na tela de login e ao passar o mouse sobre o perfil; atualize junto com o ?v= do index.html
 /* ===== Dados da planilha ===== */
 const EQUIPAMENTOS = ["Bateria", "Drone", "Carregador", "Gerador", "Controle", "Motor", "Placa", "Outros"];
 const MODELOS = ["T10", "T20", "T20P", "T25", "T25P", "T30", "T40", "T50", "T55P", "T70", "T70P", "T100", "T100 Dual", "Consumer", "Aviônica", "Outros"];
@@ -67,9 +67,17 @@ const cardsPadrao = p => {
 const cardAtivo = id => (CARDS[ROLE] || cardsPadrao(ROLE)).includes(id);
 const rotulo = k => (!P().valores && (k === "valorProposta" || k === "valorAlterado")) ? "atualização do valor da proposta (a cargo do Vendedor)" : LABEL[k];
 // fora do Administrador, o que já foi salvo não é editado (exceto o valor da proposta enquanto a OS está em análise)
-// exceções: o valor da proposta (em análise) e a garantia, que o Vendedor pode alterar a qualquer momento
-const bloqueado = (k, c) => !P().editarTudo && String(c[k] || "").trim() !== ""
-  && !(k === "valorProposta" && c.col === "analise") && !(k === "garantia" && ROLE === "vendedor");
+// Fora o Administrador: o que já foi salvo não é editado, exceto valor, técnico e "enviado ao cliente" (e a garantia, para o Vendedor),
+// que podem mudar até a OS chegar em Enviados. Depois de Enviados, nada mais pode ser alterado.
+const EDITAVEIS_ATE_ENVIO = ["valorProposta", "tecnico", "enviado"];
+const enviada = c => c.col === "enviado";
+const somenteLeitura = c => !P().editarTudo && enviada(c);
+const bloqueado = (k, c) => {
+  if (P().editarTudo) return false;
+  if (enviada(c)) return true;
+  if (EDITAVEIS_ATE_ENVIO.includes(k) || (k === "garantia" && ROLE === "vendedor")) return false;
+  return String(c[k] || "").trim() !== "";
+};
 const novoId = () => (crypto.randomUUID ? crypto.randomUUID() : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, ch => { const r = Math.random() * 16 | 0; return (ch === "x" ? r : (r & 3 | 8)).toString(16); }));
 
 /* ===== Banco de dados (Supabase) ===== */
@@ -288,6 +296,10 @@ function faltando(c, colId) {
 }
 const pendentes = c => { const t = baseIdx(c.col); return t < 0 ? [] : exigidos(c, -1, t); };   // o que já deveria estar preenchido no kanban atual
 function mover(c, colId, silencioso) {
+  if (somenteLeitura(c) && colId !== c.col) {   // OS enviada: só o Administrador mexe
+    if (!silencioso) toast("Esta OS já foi enviada; somente o Administrador pode alterá-la.", true);
+    return false;
+  }
   const f = faltando(c, colId);
   if (f.length && !P().editarTudo) {       // só o Administrador move com campos pendentes
     if (!silencioso) toast("Para mover para “" + colName(colId) + "” preencha: " + f.map(rotulo).join(", "));
@@ -542,7 +554,9 @@ function abrir(id) {
     if (bloqueado(k, c)) el.disabled = true;     // já salvo: só o Administrador edita
   });
   modal.inicial = lerForm();
-  if (!P().editarTudo) $("m-body").insertAdjacentHTML("afterbegin", '<p class="hint">Campos já salvos ficam bloqueados; apenas o Administrador pode alterá-los.</p>');
+  if (!P().editarTudo) $("m-body").insertAdjacentHTML("afterbegin", somenteLeitura(c)
+    ? '<p class="hint"><b>OS enviada: somente leitura.</b> Apenas o Administrador pode alterá-la.</p>'
+    : '<p class="hint">Campos já salvos ficam bloqueados; valor, técnico e “enviado ao cliente” podem ser alterados até a OS chegar em Enviados. Apenas o Administrador altera o restante.</p>');
 
   const atualizaFalta = () => {
     const tmp = { ...c }; Object.keys(LABEL).forEach(k => { if ($("f_" + k)) tmp[k] = val(k); });
@@ -573,6 +587,7 @@ function abrir(id) {
   $("b-salvar").onclick = () => { if (gravar()) { fechar(); render(); } };
   if (prox) $("b-prox").onclick = () => { if (gravar()) { const ok = mover(c, prox.id); if (ok) fechar(); } };
   if (ant) $("b-volta").onclick = () => { if (gravar() && mover(c, ant.id)) fechar(); };
+  if (somenteLeitura(c)) ["b-salvar", "b-volta", "b-prox"].forEach(bid => { const b = $(bid); if (b) b.disabled = true; });   // OS enviada
 
   // escolher "Condenado" na garantia pede confirmação e leva a OS ao kanban de condenados
   let garAnt = c.garantia || "";
